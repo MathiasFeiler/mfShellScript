@@ -1,0 +1,2 @@
+# mfShellScript
+Usefull shell stripts 
