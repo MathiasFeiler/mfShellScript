@@ -1,0 +1,23 @@
+#!/bin/bash
+#
+# isanylike V3.0 -  less dependencyes
+#
+# This Tool comes with absolutly no waranty !
+# c 2000 Mathias Feiler@uni-hohenheim.de 
+#   enjoy the task  !
+#
+# Find out if there is a program in PATH
+# matching the given pattern.
+# If so answes with rc=0 = there is ant print out the matches. 
+# If not with rc=1 = there is not 
+# ---------------------------------------
+
+# for i in `echo $PATH | sed -e 's#:# #g'` ;# Shoot with Canon on sparrow
+# for i in `echo $PATH | tr ":" " " `      ;# use a more trivial way 
+for i in ${PATH//:/ }	                   ;# use Bash to choper the $PATH 
+do
+  if [ -d $i ] ; then 			   ;# only if this Path exists 
+    for n in `ls $i | grep -i "${1}" ` ; do echo $i/$n ; done 
+  fi 
+done
+

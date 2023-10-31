@@ -1,0 +1,87 @@
+#!/bin/env expect 
+# attempt  ssh access by trying paswords countet line by line in a file
+# This is especially helpfull if You got a lot of server with 
+# another lot of passwords.
+#
+#  USAGE:  GetInto  user@host [<passwordlistfile>]
+#
+# c 2011 by Mathias Feiler , university of Hohenheim Germany 
+# You might use this frealy as long as You leave the copyright notics 
+# as is.
+#
+
+# default password file 
+set dpf  $env(HOME) 
+append dpf /personal/doc/schluesselworte 
+
+#set u [lindex $argv  0]
+set h [lindex $argv  0]
+set f [lindex $argv  1]
+
+if { [string length $h ] < 2 } {
+  # puts "USAGE: GetIn  <user> <Host> \[<Passwordfile>\] "
+  puts "USAGE: GetIn  <user>@<Host> \[<Passwordsfile>\] "
+  puts "       default password file is $dpf"
+  exit 
+} 
+
+if { [string length $f ] < 2 } { set f $dpf }
+
+# puts "Try establish connection:\n  h=$h\n  f=$f\n"
+
+
+# set fid [ open $f r]
+if [ catch { open $f r} fid] {
+  puts "Error: cannot open password list file"
+  exit 
+} 
+
+set try 1
+# puts "Try to connect to '$u@$h' .... "
+foreach pw [split [read $fid] \n] {
+  if { [string length $pw] > 1 && $try } {
+    # puts ".... with password '$pw'"
+    # spawn ssh -l $u $h 
+    spawn ssh $h 
+    set ssh $spawn_id
+    set attempt 0
+    expect {
+      "The authenticity of host"  {send "yes\r"; exp_continue}
+      "continue connecting (yes/no)?" {send "yes\r"; exp_continue}
+
+      "assword:"  {  if { $attempt < 1 } {
+                         set attempt 1
+		         #send_user "      $pw " 
+		         send_user " ********" 
+		         send "$pw\r" 
+                      } else {  
+                         # Second  atempt , try kill the cat 
+		     	 send_user "\r"
+                         send "\003" ;
+                         close $ssh 
+                         continue 
+                      }
+                   exp_continue}
+
+      "Last login:"	   { set try 0
+                             interact {
+                             \004 {send_user "Bail out due to ^d ('$pw')\n";exit}
+                              } ; # exp_continue
+                           }     
+      "Connection to"      {exit}
+      # eof                  {exit}  
+      "timeout"            {
+                            send_user "Cannot get in touch with server. Giving up. Please try later.\n";
+			    exit;
+ 			   }
+    }  
+  }
+}
+
+# close $f
+
+# foreach arg $argv { 
+#   format " << %s >> \n" $arg  
+#   puts $arg
+# }
+

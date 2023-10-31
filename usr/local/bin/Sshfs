@@ -1,0 +1,318 @@
+#!/bin/bash
+#
+# Sshfs  V 1.7
+#  
+# Ein Skript um eine sshfs-Verbindung offen zu halten und ggf neu zu öffnen.
+# 
+# Version 	Anmerkung 
+# 1.0		Erste Arbeitsfähig Version
+# 1.1		Einige Fehler entfernt Bereinigungen und Verschlankungen 
+# 1.2    	Verschlankungen
+# 1.3		Port aus Config ziehen 
+# 1.3a		Port aus Config ziehen - Schwächenbereinigt ($ im PW geht jetzt)
+# 1.3b		An längere Prozessnummern angepasst  
+# 1.4           Sicherung gegen Rekursionskatastrophe (Beobachtet auf T510
+# 1.5           basename-Problem hoffentlich final gelößt 
+# 1.6           Prüfinterval von 30 Sekunden auf 15 verkürzt
+# 1.7		Abfangen von SSH-Key-Austausch-dialog veressert aber noch ungetestet, 
+#
+# Vorgang:
+# -----------
+# Parameter-prüfung: 
+#  [ -c ]           Listet die möglichen Credential 
+#  [ -c <cred> ]    gibt ein spezielles Credential-, Log und Stopp-File an. 
+#                   Sie lauten dann auf 
+#                       $HOME/.sshfscredentials.<cred>    
+#                       /tmp/Sshfs.STOPP.<cred>
+#                       /tmp/Sshfs.log.<cred>.log
+#  [ -d ]           Schaltet Debug-Ausgaben ein
+#  [ -x ]           stoppt die entsprechende zuvor definierte Instanz von Sshfs
+#
+# Falls -x angegeben wurde wird das Stopp-file erzeugt und diese 
+# Instanz terminiert beim neächsten Check wird der passende Worker das Stopp-File
+# finden und terminieren. 
+#
+# Entsprechen <cred> wird das passende Credential-File gelesen
+# Quelle , Ziel (Mount-Directory)  und Passwort wird aus 
+#   $HOME/.sshfscredentials 
+# bzw. aus
+#   $HOME/.sshfscredentials.<cred>
+# geholt 
+#
+#     
+# -------------------
+# Festlegungen
+#
+DEBUG=false
+INST=''
+# echo "\$0 = $0"	
+PRG=$(basename $0)
+# echo "PRG=$PRG"
+DFLTCREDF=$HOME/.sshfscredentials
+DFLTSTOPF=/tmp/Sshfs.STOPP
+DFLTLOGF=/tmp/Sshfs.log
+DFLTPIDF=/tmp/Sshfs.pid
+
+# Default - falls kein -c <cred>  angegeben wird
+CREDF="${DFLTCREDF}"
+STOPF="${DFLTSTOPF}"
+LOGF="${DFLTLOGF}"
+PIDF="${DFLTPIDF}"
+
+# default falls kein CREDF existiert: 
+SRC="User@Server:ServerDir"
+TGT="LocalHomeMountDir"
+KEY="PW4User@Server"
+PORT=22
+
+
+
+function DEB() {
+  $DEBUG &&  echo -e "DEB: $@" 1>&2
+}
+
+
+
+
+function Verbinde() {
+  # $1= user@Host:Path ; $2= Mountpoint  ; $3= PW ; $4=Portnummer
+  uh=$1 ; mp=$2 ; pw=$3  pt=$4
+  tries=3
+  while cat /etc/mtab | grep " $mp " >/dev/null ; do
+    if fusermount -u $mp ; then true; else 
+    	echo "Resource '$mp' durch prozesse belegt.... Warten..."
+    	sleep 10
+    fi	 
+    sleep 1
+    let tries--
+    [ $tries -lt 1 ] && break
+  done   
+  # Spezialzeichein in Passworten escapen
+  epw=$(   echo "${pw}" | sed -e 's/\(["$&;]\)/\\\1/g'  )
+  expect -c '
+  set env(LC_ALL) "C"
+  set env(PS1) " # "
+  set uh "'"$uh"'"
+  set mp "'"$mp"'"
+  # set pw "'"$pw"'"
+  set pw "'"$epw"'"
+  set pt "'"$pt"'"
+  # set prompt ":|#|\\\$|>"
+  set  timeout  80
+  spawn -ignore HUP sshfs -p $pt $uh $mp
+  set sshfspid $spawn_id
+  set attempt 0
+  expect {
+    "continue connecting (yes/no/\[fingerprint\])?" { 
+        send "yes\r" ;
+	send_user "ECDSA key automatisch akzeptiert.\n";  
+	exp_continue  
+    }
+    "continue connecting (yes/no)?" { 
+        send "yes\r" ; 
+	send_user "ECDSA key automatisch angeommen.\n";  
+	exp_continue  
+    }
+    "want to continue connecting"   { send "yes\r" ; exp_continue  }
+    "nonempty" { 
+       send_user "Nicht-leerer MP \"$mp\" , gebe auf.\n" ; 
+       close $sshfspid ; exit 
+    }
+    "onnection reset by peer" { 
+       send_user "Server lehnt ab. Fail2Ban?  Gebe auf.\n" ; 
+       close $sshfspid ; exit 
+    }
+    "onnection refused" {
+       send_user "Verbindung abgelehnt, Fail2Ban? 10 min Warten? Gebe auf.\n"; 
+       close $sshfspid ; exit 
+    } 
+    "assword:" { 
+       if { $attempt < 1 } {
+         send "$pw\r"  ;  send_user " ********"  ; set attempt 1   
+         # send "$pw\r"  ;  send_user " $pw"  ; set attempt 1   
+         exp_continue
+       } else {
+         send_user "Auth-Fehler, gebe auf\n" ; send "\003" ;
+         close $sshfspid  ;  exit 
+       } 
+    }
+    "timeout" { send_user "Zeitüberschreitung, gebe auf.\n" ; exit }                   
+    "eof" {send_user "EOF erkannt - wharscheinlich steht die Verbindung nun.\n" ; exit } 
+  }'
+}
+
+
+
+
+
+
+# Parameterprüfung , Parameter Speichern für Worker-aufruf 
+PARAM="$@"
+SUBPROC=0
+while [ $# -gt 0 ] ; do 
+  case "x$1" in 
+  x-c*)
+      INST="$2" 
+      shift 1
+      if [ -z "${INST}" ] ; then 
+        echo "Explizite verfügbare Credential-namen:"
+        for c in $(ls $HOME/.sshfscredentials.?* | sed -e 's/.*credentials\.//') ; do 
+          aktiv="-"; [ -f ${PIDF}.$c ] && aktiv="on"
+          # printf " %-16.16s %s\n" $c  $aktiv 
+          printf " %-3.3s %-20.20s\n" $aktiv $c   
+        done   
+        # ls $HOME/.sshfscredentials.?* | sed -e 's/.*credentials\.//'
+        exit 0
+      fi     
+      CREDF="${DFLTCREDF}.${INST}"
+      STOPF="${DFLTSTOPF}.${INST}"
+      LOGF="${DFLTLOGF}.${INST}"
+      PIDF="${DFLTPIDF}.${INST}"
+      ;;
+  x-d*)  
+      DEBUG=true  ;;
+  x-x*)  
+      touch $STOPF ;  DEB "Stopp-File alngelegt:  $STOPF"
+      echo "Wenn die Resource nicht belegt ist, sollte sie in einer Minute verschwunden sein." 
+      exit 0  ;;
+  x-worker) 
+      DEB "Skript wurde mit '-worker' aufgerufen"
+      let SUBPROC++
+      if [ $SUBPROC -ge 2 ] ; then 
+        echo "ERROR: Rekursionskatastrophe! Abbruch."
+        ps -ef | grep Sshfs
+        echo "ps -e PPID: "
+        ps -e| grep "[ ]*$PPID " 
+        me=$(basename $(ps -e| grep "[ ]*$$ "    | grep -v grep | awk '{print $4}' )) # Mein eigener Prozessname
+        echo "me = $me   "
+        pa=$(basename $(ps -e| grep "[ ]*$PPID " | grep -v grep | awk '{print $4}' )) # Prozessname des Vaters
+        echo "pa=$pa "
+        exit 3
+      fi     
+      ;;      
+  x*)
+      echo "$PRG : Unerwarteter Parameter: '$1' . 
+      Usage: $PRG [-d] [-c <cred>] [-x] 
+      Wobei gilt: 
+        -d          Debugging einschalten 
+        -c <cred>   Creds nehmen aus '${DFLTCREDF}.<cred>'
+        -x          Den Sshfs-Worker (gemäß <cred>) stoppen
+        
+      Logfile: ${LOGF}
+      Pidfile: ${PIDF}"
+      
+      exit 1 ;; 
+  esac
+  shift 1
+done  
+
+DEB "### Credentials einlesen aus '$CREDF' " 
+if [ -f $CREDF ] ; then 
+  source $CREDF
+else 
+  echo "$PRG : Fehlendes Cred-File: $CREDF
+  Im CRED-File müssen die Variablen SRC, TGT und KEY definiert sein. 
+  Optional ist die Variable PORT . 
+  Diese Beispieldatei wird angelegt: $CREDF " 1>&2
+  echo -e "SRC='$SRC'\nTGT='$TGT'\nKEY='$KEY'\nPORT='$PORT' " > $CREDF
+  exit 2
+fi    
+# Mountpoint mit vollem Pfad definieren 
+MP=${HOME}/${TGT}
+
+DEB "### Worker oder Caller-Instanz?" 
+me=$(basename $(ps -e| grep "[ ]*$$ "    | grep -v grep | awk '{print $4}' )) # eigener Prozessname
+pa=$(basename $(ps -e| grep "[ ]*$PPID " | grep -v grep | awk '{print $4}' )) # Prozessname Vater
+if [ "${me}" = "${pa}" -o  "${pa}" = "systemd" ] ; then 
+  echo "$$" > $PIDF
+  echo "Worker-Instanz (PID $$) gestartet : $(date +%Y-%m-%d_%H.%M.%S)" 
+  if $DEBUG ; then 
+    for w in DEBUG me pa INST LOGF STOPF CREDF PIDF SRC TGT MP KEY PORT ; do
+      eval DEB "$w=\$$w"
+    done
+  fi     
+else 
+  DEB "Starter-Instanz::  me=${me} ; pa=${pa} ; \$\$=$$ ; PPID=$PPID" 
+  DEB "### Testen ob schon ein Worker läuft, wenn nicht , starten"
+  if [ -f ${PIDF} ] ; then 
+    P=$(cat ${PIDF}) 
+    if ps -e | grep "$P.*[sS]shfs" > /dev/null ; then 
+      echo "WARNUNG: Worker-Instanz existiert schon (PID=$P)... Abbruch" 1>&2
+      exit 3
+    fi
+  fi      
+  DEB "### ggf alten Exit-Marker löschen "
+  [ -f $STOPF ] && rm $STOPF
+  DEB "### Als Starterinstanz: Rotieren der Logfiles"
+  k=.9
+  for i in  .8 .7 .6 .5 .4 .3 .2 .1 '' ; do
+    [ -f ${LOGF}${i} ] && mv -f  ${LOGF}${i} ${LOGF}${k}
+    k="$i"
+  done   
+  # export DEBUG INST LOGF STOPF CREDF PIDF 
+  DEB "### Starten der Worker-Instanz : Logfile: $LOGF"
+  DEB "Starte:   nohup $0 -worker $PARAM >> $LOGF"  
+  nohup $0 -worker $PARAM >> $LOGF 2>&1 &
+  echo "Worker-Logfile : $LOGF" 1>&2
+  exit 0 
+fi  
+
+
+
+#### Ab hier ist nur noch Worker-Code ####
+DEB "### Sicher gehen, dass der MP existiert. "
+
+mkdir -p $MP
+DEB "### ggf SRC korrigieren"
+if echo $SRC | grep ":" >/dev/null ; then true ; else
+  SRC="${SRC}:"
+fi 
+
+DEB "### Eine Fast ewig währende Schleife"
+ULOOP=0
+until [ -f ${STOPF} ] ; do 
+  CLOOP=0
+  while true ; do 
+    let CLOOP++
+    # Funktion testen und wenn alles ok ist kurz schlafen, wenn nicht Raus aus der Schleife  
+    # Ein leeres Verzeichnis ist der unbelegte Mountpoint
+    #DEB "Überwachung: restarts:$ULOOP Checks:$CLOOP   $(date +%Y-%m-%d_%H.%M.%S)"
+    DEB "Überwachung:  loop(Up.Chk) = $ULOOP.$CLOOP   $(date +%Y-%m-%d_%H.%M.%S)"
+    [ $(ls ${MP}| wc -l) -lt 1 ]  &&  break
+    [ -f ${STOPF} ] && break
+    if false ; then
+      f="${MP}/.ConnectionTest_$$_$(date +%Y-%m-%d_%H.%M.%S)"
+      touch $f || break
+      sleep 1 
+      rm $f || break
+    fi  
+    # DEB "Verbindung steht, kurze Pause."
+    sleep 15   ;# war 30 Sekunden
+  done 
+  [ -f ${STOPF} ] && break
+  let ULOOP++
+  # Disfunktion protokollieren und Verbindung (ggf. erneut) aufbauen
+  echo "WARNUNG: Keine Verbindung $(date +%Y-%m-%d_%H.%M.%S)" 1>&2
+  echo "Starte Verbindungsaufbau Nr.$ULOOP ...." 1>&2
+  Verbinde "${SRC}" "$MP" "$KEY" "${PORT}"
+  sleep 5 ;# War 10 Sekunden
+  DEB "ls $MP ---> $(ls ${MP}| wc -l) Dateien"
+done
+
+
+DEB "### Worker: Abbruchmakrker gefunden. Aufräumen..."
+tries=240
+while cat /etc/mtab | grep " $MP " >/dev/null ; do
+  if fusermount -u $MP ; then true; else 
+     # echo "Resource '$MP' offenbar durch Prozesse belegt.... Warten..."
+     sleep 10 ;# War 15 Sekunden
+   fi	 
+   let tries--
+   if [ $tries -lt 1 ] ; then 
+     echo "ICH GEBE AUF! Die Resource  '$MP'  ist dauerhaft belegt!"
+     break
+   fi  
+done   
+rm ${STOPF} ${PIDF}
+echo "Sshfs-Worker beendet"
+

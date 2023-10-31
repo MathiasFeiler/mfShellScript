@@ -1,0 +1,61 @@
+#!/bin/bash
+#
+# From time to time it is very usefull to have an (almost) independend
+# Browser around in order to use different credentials.
+# This is expecially true if You want to perform administrativ tasks on one 
+# side and check the new setup as an average user on the other side. 
+# at this point this script helps me to start an independent Browser of 
+# the same Flavour in an other Base-directory (alomost an different 
+# Home-Directory) however within my regular account with the regular User-ID.   
+# This way managing and testing via WEB is much easyer. 
+#
+PROF=brb
+echo  "  Second Browser B  ._${PROF}_   V.0.3 "
+D="$HOME/._${PROF}_" # `date +%Y%m%b`
+mkdir -p "$D/data"
+OH=$HOME
+HOME="$D"
+export HOME
+cd "$HOME"
+
+# Start a Nautilus - for convinience 
+nautilus --no-desktop  .  >/dev/null 2>&1 &
+gnome-terminal --show-menubar --working-directory="$D"
+
+# What useable  browser do we have ? 
+browser=firefox ; # for default
+for br in  firefox   chromium-browser epiphany-browser false ; do 
+  brow=`which ${br} 2>/dev/null`
+  if [ -n "${brow}" -a -x "${brow}" ] ; then
+     browser=${brow} 
+     break 1 
+  fi 
+done 
+# echo "br=$br   brow=${brow}   browser=${browser} "
+echo "  Starting '$browser' ..."A
+LOG="$D/browser.log"
+case ${br} in 
+chromium-browser)
+  # ${br} --user-data-dir=$D/data --incognito --no-proxy-server https://www.google.com >> $LOG 2>&1
+  CMD="${br} --user-data-dir=${D}/data --incognito --no-proxy-server https://www.google.com"
+  echo "Launch_command: ${CMD} " > "${LOG}" 2>&1
+  ${CMD}  >> "${LOG}" 2>&1
+  ;;
+firefox)
+   # ${br}  -CreateProfile  ${PROF} > $D/browser.log # ${br} >> ${LOG} 2>&1
+   # ${br} -private -no-remote -new-instance -browser 
+   # ${br} --private-window --no-remote --new-instance  >> ${LOG} 2>&1
+   CMD="${br} --private-window --no-remote --new-instance  "
+   echo "Launch_command: ${CMD} " > "${LOG}" 2>&1
+   ${CMD}  >> "${LOG}" 2>&1
+  ;;
+epiphany-browser) # br=epiphany-browser
+  CMD="${br} "
+  echo "Launch_command: ${CMD} " > "${LOG}" 2>&1
+  ${CMD}  >> "${LOG}" 2>&1
+  ;;
+esac
+
+HOME=$OH	# in cats of source
+tput clear
+# rm -rf $D
